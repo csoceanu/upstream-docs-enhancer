@@ -1,0 +1,42 @@
+name: Suggest Documentation Update
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  suggest-docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR Code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install -U google-genai
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "docbot@example.com"
+          git config --global user.name "Doc Bot"
+
+      - name: Set up GitHub CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gh
+
+      - name: Run Documentation Suggester
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DOCS_REPO_URL: ${{ secrets.DOCS_REPO_URL }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          python scripts/suggest_docs.py
