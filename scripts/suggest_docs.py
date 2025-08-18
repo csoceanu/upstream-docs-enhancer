@@ -14,6 +14,41 @@ def get_diff():
     result = subprocess.run(["git", "diff", "origin/main...HEAD"], capture_output=True, text=True)
     return result.stdout.strip()
 
+def get_commit_info():
+    """Get commit information for the documentation PR reference"""
+    try:
+        # Get the HEAD commit - this is what GitHub Actions checked out for the PR
+        current_commit_result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+        if current_commit_result.returncode != 0:
+            return None
+        commit_hash = current_commit_result.stdout.strip()
+        
+        # Get remote origin URL to construct proper commit links
+        remote_url = subprocess.run(["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True)
+        if remote_url.returncode != 0:
+            return None
+        
+        # Convert SSH URL to HTTPS if needed
+        repo_url = remote_url.stdout.strip()
+        if repo_url.startswith("git@github.com:"):
+            repo_url = repo_url.replace("git@github.com:", "https://github.com/").replace(".git", "")
+        elif repo_url.endswith(".git"):
+            repo_url = repo_url.replace(".git", "")
+        
+        # Get commit details
+        short_hash = commit_hash[:7]
+        
+        # Just get the current commit that triggered the pipeline
+        return {
+            'repo_url': repo_url,
+            'current_commit': commit_hash,
+            'short_hash': short_hash
+        }
+            
+    except Exception as e:
+        print(f"Warning: Could not get commit info: {e}")
+        return None
+
 def clone_docs_repo():
     subprocess.run(["git", "clone", DOCS_REPO_URL, "docs_repo"])
     os.chdir("docs_repo")
@@ -133,11 +168,23 @@ def overwrite_file(file_path, new_content):
         print(f"Failed to write {file_path}: {e}")
         return False
 
-def push_and_open_pr(modified_files):
+def push_and_open_pr(modified_files, commit_info=None):
     subprocess.run(["git", "add"] + modified_files)
+    
+    # Build commit message with source commit references
+    commit_msg = "Auto-generated doc updates from code PR"
+    
+    if commit_info:
+        repo_name = commit_info['repo_url'].split('/')[-1]
+        commit_url = f"{commit_info['repo_url']}/commit/{commit_info['current_commit']}"
+        commit_msg += f"\n\nSource commit: {commit_info['short_hash']} from {repo_name}"
+        commit_msg += f"\nLink: {commit_url}"
+    
+    commit_msg += "\n\nAssisted-by: Gemini"
+    
     subprocess.run([
         "git", "commit",
-        "-m", "Auto-generated doc updates from code PR\n\nAssisted-by: Gemini"
+        "-m", commit_msg
     ])
     # Add remote with token auth
     gh_token = os.environ["GH_TOKEN"]
@@ -146,11 +193,15 @@ def push_and_open_pr(modified_files):
     subprocess.run(["git", "remote", "set-url", "origin", docs_repo_url])
     subprocess.run(["git", "push", "--set-upstream", "origin", BRANCH_NAME, "--force"])
 
+    # Build PR body (simple, without commit references)
+    pr_body = "This PR updates the following documentation files based on code changes:\n\n"
+    pr_body += "\n".join([f"- `{f}`" for f in modified_files])
+    pr_body += "\n\n*Note: Each commit in this PR contains references to the specific source code commits that triggered the documentation updates.*"
+
     subprocess.run([
         "gh", "pr", "create",
         "--title", "Auto-Generated Doc Updates from Code PR",
-        "--body", f"This PR updates the following documentation files based on the code changes:\n\n" +
-                  "\n".join([f"- `{f}`" for f in modified_files]),
+        "--body", pr_body,
         "--base", "main",
         "--head", BRANCH_NAME
     ])
@@ -165,6 +216,12 @@ def main():
         print("No changes detected.")
         return
 
+    # Get commit info before switching to docs repo
+    commit_info = get_commit_info()
+    if commit_info:
+        print(f"Source repository: {commit_info['repo_url']}")
+        print(f"Latest commit: {commit_info['short_hash']}")
+    
     clone_docs_repo()
     previews = get_file_previews()
 
@@ -201,8 +258,24 @@ def main():
             print("[Dry Run] Would push and open PR for the following files:")
             for f in modified_files:
                 print(f"- {f}")
+            
+            if commit_info:
+                # Show what the commit message would look like
+                repo_name = commit_info['repo_url'].split('/')[-1]
+                commit_url = f"{commit_info['repo_url']}/commit/{commit_info['current_commit']}"
+                commit_msg = "Auto-generated doc updates from code PR"
+                commit_msg += f"\n\nSource commit: {commit_info['short_hash']} from {repo_name}"
+                commit_msg += f"\nLink: {commit_url}"
+                commit_msg += "\n\nAssisted-by: Gemini"
+                
+                print(f"\n[Dry Run] Commit message would be:")
+                print("=" * 50)
+                print(commit_msg)
+                print("=" * 50)
+                
+                print(f"\n[Dry Run] PR body would be simple (commit reference is in commit message only)")
         else:
-            push_and_open_pr(modified_files)
+            push_and_open_pr(modified_files, commit_info)
     else:
         print("All documentation is already up to date — no PR created.")
 
