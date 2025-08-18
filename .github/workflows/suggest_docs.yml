@@ -1,12 +1,23 @@
-name: Suggest Documentation Update
+name: Suggest Documentation Update (Enhanced)
 
 on:
   pull_request:
     types: [opened, synchronize]
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force run even if filters would normally skip'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   suggest-docs:
     runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.force_run == 'true' ||
+      contains(github.event.pull_request.title, '[update-docs]') ||
+      contains(github.event.pull_request.body, '[update-docs]')
 
     steps:
       - name: Checkout PR Code
