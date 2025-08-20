@@ -13,7 +13,7 @@ To use the **Upstream Documentation Enhancer**, follow these steps:
    - `GH_PAT`: Your GitHub Personal Access Token
 
 3. **Trigger the Pipeline**  
-   Once set up, the enhancer will automatically run when you open a Pull Request (PR) that contains `[update-docs]` in the title or description. The enhancer will:
+   Once set up, the enhancer will automatically run when someone comments `[update-docs]` on a Pull Request (PR). The enhancer will:
 
    - Analyze the changes
    - Generate documentation suggestions
