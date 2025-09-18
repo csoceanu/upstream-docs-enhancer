@@ -126,8 +126,12 @@ def clone_docs_repo():
 
 def get_file_previews():
     previews = []
-    adoc_files = list(Path(".").rglob("*.adoc"))
-    for path in adoc_files:
+    # Look for both .adoc and .md documentation files
+    doc_files = []
+    doc_files.extend(list(Path(".").rglob("*.adoc")))
+    doc_files.extend(list(Path(".").rglob("*.md")))
+    
+    for path in doc_files:
         try:
             with open(path, encoding="utf-8") as f:
                 lines = f.readlines()[:10]  # Get first 10 lines (or fewer if file is short)
@@ -148,7 +152,7 @@ You are a documentation assistant.
 A code change was made in this PR (Git diff):
 {diff}
 
-Below is a list of .adoc documentation files and a preview of their content:
+Below is a list of documentation files (.adoc and .md) and a preview of their content:
 
 {context}
 
@@ -163,12 +167,12 @@ Based on the diff, which files from this list should be updated? Return only the
         ),
     )
     
-    # Filter out source code files - only keep .adoc documentation files
+    # Filter out source code files - only keep documentation files (.adoc and .md)
     suggested_files = [line.strip() for line in response.text.strip().splitlines() if line.strip()]
-    filtered_files = [f for f in suggested_files if f.endswith('.adoc')]
+    filtered_files = [f for f in suggested_files if f.endswith('.adoc') or f.endswith('.md')]
     
     if len(filtered_files) != len(suggested_files):
-        skipped = [f for f in suggested_files if not f.endswith('.adoc')]
+        skipped = [f for f in suggested_files if not (f.endswith('.adoc') or f.endswith('.md'))]
         print(f"Skipping non-documentation files: {skipped}")
     
     return filtered_files
@@ -181,9 +185,26 @@ def load_full_content(file_path):
         return ""
 
 def ask_gemini_for_updated_content(diff, file_path, current_content):
-    prompt = f"""
-You are a documentation assistant.
-
+    # Determine file format based on extension
+    is_markdown = file_path.endswith('.md')
+    is_asciidoc = file_path.endswith('.adoc')
+    
+    if is_markdown:
+        format_instructions = """
+CRITICAL FORMATTING REQUIREMENTS FOR MARKDOWN FILES:
+- NEVER use markdown code fences like ```markdown or ``` to wrap the entire file content
+- Markdown files start directly with content (comments, headers, or text)
+- Use standard Markdown syntax: # for headers, ``` for code blocks, | for tables
+- Table separators must be simple: |---|---|---| (no backslashes, no extra characters)
+- Do NOT add extra ``` backticks at the end of the file
+- Maintain proper table structures with correct column alignment
+- Keep all links and references intact and properly formatted
+- Use consistent indentation and spacing
+- Do NOT mix AsciiDoc syntax with Markdown
+"""
+        format_name = "Markdown"
+    elif is_asciidoc:
+        format_instructions = """
 CRITICAL FORMATTING REQUIREMENTS FOR ASCIIDOC FILES:
 - NEVER use markdown code fences like ```adoc or ``` anywhere in the file
 - AsciiDoc files start directly with content (comments, headers, or text)  
@@ -191,6 +212,22 @@ CRITICAL FORMATTING REQUIREMENTS FOR ASCIIDOC FILES:
 - Do NOT mix markdown and AsciiDoc syntax
 - Maintain proper table structures with matching |=== opening and closing
 - Keep all cross-references (xref) intact and properly formatted
+"""
+        format_name = "AsciiDoc"
+    else:
+        # Default to treating as text/markdown
+        format_instructions = """
+FORMATTING REQUIREMENTS:
+- Maintain the existing format and syntax of the file
+- Keep all links and references intact and properly formatted
+- Use consistent indentation and spacing
+"""
+        format_name = "the existing format"
+
+    prompt = f"""
+You are a documentation assistant.
+
+{format_instructions}
 - Ensure consistent indentation and spacing
 
 A developer made the following code changes:
@@ -204,18 +241,11 @@ Here is the full content of the current documentation file `{file_path}`:
 Analyze the diff and check whether **new, important information** is introduced that is not already covered in this file.
 
 - If the file already includes everything important, return exactly: `NO_UPDATE_NEEDED`
-- If the file is missing key information, return the **full updated file content**, modifying only what is necessary. in valid AsciiDoc format
-
-VALIDATION CHECKLIST - Before responding, verify:
-1. No markdown code fences (```) anywhere in the content
-2. All tables have matching |=== opening and closing
-3. All section headers use correct ==== syntax  
-4. All cross-references are properly formatted
-5. No broken formatting or incomplete structures
+- If the file is missing key information, return the **full updated file content**, modifying only what is necessary, in valid {format_name} format
 
 Do not explain or summarize — only return either:
 - `NO_UPDATE_NEEDED` (if nothing is missing), or
-- The full updated AsciiDoc file content with perfect syntax (NO markdown!)
+- The full updated file content with perfect {format_name} syntax
 """
 
 
