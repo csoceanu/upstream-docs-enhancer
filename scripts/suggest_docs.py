@@ -108,57 +108,68 @@ def get_commit_info():
         print(f"Warning: Could not get commit info: {e}")
         return None
 
-def clone_docs_repo():
-    subprocess.run(["git", "clone", DOCS_REPO_URL, "docs_repo"])
-    os.chdir("docs_repo")
-
-    # Try to check out the branch if it already exists
-    result = subprocess.run(["git", "ls-remote", "--heads", "origin", BRANCH_NAME], capture_output=True, text=True)
-    if result.stdout.strip():
-        print(f"Reusing existing branch: {BRANCH_NAME}")
-        subprocess.run(["git", "fetch", "origin", BRANCH_NAME])
-        subprocess.run(["git", "checkout", BRANCH_NAME])
-        subprocess.run(["git", "pull", "origin", BRANCH_NAME])
-    else:
-        print(f"Creating new branch: {BRANCH_NAME}")
-        subprocess.run(["git", "checkout", "-b", BRANCH_NAME])
-
-
-def get_file_previews():
-    previews = []
-    # Look for both .adoc and .md documentation files
-    doc_files = []
-    doc_files.extend(list(Path(".").rglob("*.adoc")))
-    doc_files.extend(list(Path(".").rglob("*.md")))
+def setup_docs_environment():
+    """Set up docs environment - either local subfolder or clone separate repo"""
+    docs_subfolder = os.environ.get("DOCS_SUBFOLDER")
     
-    for path in doc_files:
-        try:
-            with open(path, encoding="utf-8") as f:
-                lines = f.readlines()[:10]  # Get first 10 lines (or fewer if file is short)
-                first_lines = "".join(lines)
-                previews.append((str(path), first_lines.strip()))
-        except Exception as e:
-            print(f"Skipping file {path}: {e}")
-    return previews
+    if docs_subfolder:
+        # Use local subfolder (same repo)
+        current_dir = os.getcwd()
+        print(f"DEBUG: Current working directory before chdir: {current_dir}")
+        print(f"DEBUG: DOCS_SUBFOLDER environment variable value: '{docs_subfolder}'")
+        print(f"DEBUG: Full path to docs subfolder: {os.path.join(current_dir, docs_subfolder)}")
+        
+        if not os.path.exists(docs_subfolder):
+            print(f"ERROR: Docs subfolder '{docs_subfolder}' not found at {os.path.join(current_dir, docs_subfolder)}")
+            print(f"DEBUG: Contents of current directory: {os.listdir('.')}")
+            return False
+        
+        print(f"DEBUG: Changing to docs subfolder: {docs_subfolder}")    
+        os.chdir(docs_subfolder)
+        
+        final_dir = os.getcwd()
+        print(f"DEBUG: Final working directory after chdir: {final_dir}")
+        print(f"DEBUG: Contents of docs directory: {os.listdir('.')[:10]}...")  # Show first 10 items
+        return True
+    else:
+        # Clone separate repository (existing behavior)
+        print("Cloning separate docs repository")
+        subprocess.run(["git", "clone", DOCS_REPO_URL, "docs_repo"])
+        os.chdir("docs_repo")
 
-def ask_gemini_for_relevant_files(diff, file_previews):
-    context = "\n\n".join(
-        [f"File: {fname}\nPreview:\n{preview}" for fname, preview in file_previews]
-    )
+        # Try to check out the branch if it already exists
+        result = subprocess.run(["git", "ls-remote", "--heads", "origin", BRANCH_NAME], capture_output=True, text=True)
+        if result.stdout.strip():
+            print(f"Reusing existing branch: {BRANCH_NAME}")
+            subprocess.run(["git", "fetch", "origin", BRANCH_NAME])
+            subprocess.run(["git", "checkout", BRANCH_NAME])
+            subprocess.run(["git", "pull", "origin", BRANCH_NAME])
+        else:
+            print(f"Creating new branch: {BRANCH_NAME}")
+            subprocess.run(["git", "checkout", "-b", BRANCH_NAME])
+        return True
 
+
+def summarize_long_file(file_path, content):
+    """Generate AI summary for the given file content"""
+    print(f"Generating summary for long file: {file_path}")
+    
     prompt = f"""
-You are a documentation assistant.
+Analyze this documentation file and create a comprehensive summary that captures:
 
-A code change was made in this PR (Git diff):
-{diff}
+1. **Primary Purpose**: What this file documents
+2. **Key Topics Covered**: Main sections, features, components discussed  
+3. **Technical Keywords**: Important terms, APIs, configuration options, commands
+4. **Target Audience**: Who would use this documentation
+5. **Related Concepts**: What other systems/features this relates to
 
-Below is a list of documentation files (.adoc and .md) and a preview of their content:
+File: {file_path}
+Content:
+{content}
 
-{context}
-
-Based on the diff, which files from this list should be updated? Return only the file paths (one per line). No explanations or extra formatting.
+Provide a detailed summary that would help an AI system understand when this file should be updated based on code changes.
 """
-
+    
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt,
@@ -167,15 +178,103 @@ Based on the diff, which files from this list should be updated? Return only the
         ),
     )
     
-    # Filter out source code files - only keep documentation files (.adoc and .md)
-    suggested_files = [line.strip() for line in response.text.strip().splitlines() if line.strip()]
-    filtered_files = [f for f in suggested_files if f.endswith('.adoc') or f.endswith('.md')]
+    return response.text.strip()
+
+def get_file_content_or_summaries(line_threshold=300):
+    """Get file content - full content for short files, AI summaries for long files"""
+    file_data = []
+    # Look for both .adoc and .md documentation files
+    doc_files = []
+    doc_files.extend(list(Path(".").rglob("*.adoc")))
+    doc_files.extend(list(Path(".").rglob("*.md")))
     
-    if len(filtered_files) != len(suggested_files):
-        skipped = [f for f in suggested_files if not (f.endswith('.adoc') or f.endswith('.md'))]
-        print(f"Skipping non-documentation files: {skipped}")
+    for path in doc_files:
+        try:
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+                
+            # Check file length and decide what to use
+            line_count = len(content.split('\n'))
+            
+            if line_count > line_threshold:
+                # Long file - generate summary
+                content_to_use = summarize_long_file(str(path), content)
+                print(f"Processed {path}: {line_count} lines (using AI summary)")
+            else:
+                # Short file - use full content
+                content_to_use = content
+                print(f"Processed {path}: {line_count} lines (using full content)")
+            
+            file_data.append((str(path), content_to_use))
+            
+        except Exception as e:
+            print(f"Skipping file {path}: {e}")
     
-    return filtered_files
+    print(f"DEBUG: Returning {len(file_data)} files for processing")
+    return file_data
+
+def ask_gemini_for_relevant_files(diff, file_previews):
+    all_relevant_files = []
+    batch_size = 10
+    
+    # Process files in batches of 10
+    for i in range(0, len(file_previews), batch_size):
+        batch = file_previews[i:i + batch_size]
+        batch_num = (i // batch_size) + 1
+        total_batches = (len(file_previews) + batch_size - 1) // batch_size
+        
+        print(f"Processing batch {batch_num}/{total_batches} ({len(batch)} files)...")
+        
+        # Create context for this batch of 10 files
+        context = "\n\n".join(
+            [f"File: {fname}\nPreview:\n{preview}" for fname, preview in batch]
+        )
+
+        prompt = f"""
+        You are a VERY STRICT documentation assistant. You must select ONLY the ABSOLUTE MINIMUM files.
+
+        A code change was made in this PR (Git diff):
+        {diff}
+
+        Below is a list of documentation files (.adoc and .md) and their content:
+
+        {context}
+
+        STRICT RULES - BE EXTREMELY CONSERVATIVE:
+        1. ONLY select command reference files if a command was added/modified
+        2. ONLY select feature-specific docs if that EXACT feature was changed
+        3. When in doubt, DO NOT select the file
+
+        Based on the diff, which files from this list should be updated? Return only the file paths (one per line). No explanations or extra formatting.
+        If no files need updates, return "NONE".
+        """
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(thinking_budget=0)
+            ),
+        )
+        
+        result_text = response.text.strip()
+        if result_text.upper() == "NONE":
+            print(f"Batch {batch_num}: No relevant files found")
+            continue
+        
+        # Filter out source code files - only keep documentation files (.adoc and .md)
+        suggested_files = [line.strip() for line in result_text.splitlines() if line.strip()]
+        filtered_files = [f for f in suggested_files if f.endswith('.adoc') or f.endswith('.md')]
+        
+        if len(filtered_files) != len(suggested_files):
+            skipped = [f for f in suggested_files if not (f.endswith('.adoc') or f.endswith('.md'))]
+            print(f"Batch {batch_num}: Skipping non-documentation files: {skipped}")
+        
+        all_relevant_files.extend(filtered_files)
+        print(f"Batch {batch_num}: Found {len(filtered_files)} relevant files")
+    
+    print(f"Total relevant files found: {len(all_relevant_files)}")
+    return all_relevant_files
 
 def load_full_content(file_path):
     try:
@@ -192,11 +291,15 @@ def ask_gemini_for_updated_content(diff, file_path, current_content):
     if is_markdown:
         format_instructions = """
 CRITICAL FORMATTING REQUIREMENTS FOR MARKDOWN FILES:
-- NEVER use markdown code fences like ```markdown or ``` to wrap the entire file content
-- Markdown files start directly with content (comments, headers, or text)
-- Use standard Markdown syntax: # for headers, ``` for code blocks, | for tables
+**MOST IMPORTANT**: The output must be RAW MARKDOWN content that can be written DIRECTLY to a .md file.
+- NEVER wrap the output in code fences like ```markdown or ``` 
+- The FIRST character of your response should be the FIRST character of the file (# for header, comment, or text)
+- The LAST character of your response should be the LAST character of the file content
+- NO "```markdown" at the beginning
+- NO "```" at the end
+- Return ONLY the raw file content, nothing else
+- Use standard Markdown syntax: # for headers, ``` for code blocks within content, | for tables
 - Table separators must be simple: |---|---|---| (no backslashes, no extra characters)
-- Do NOT add extra ``` backticks at the end of the file
 - Maintain proper table structures with correct column alignment
 - Keep all links and references intact and properly formatted
 - Use consistent indentation and spacing
@@ -206,8 +309,13 @@ CRITICAL FORMATTING REQUIREMENTS FOR MARKDOWN FILES:
     elif is_asciidoc:
         format_instructions = """
 CRITICAL FORMATTING REQUIREMENTS FOR ASCIIDOC FILES:
-- NEVER use markdown code fences like ```adoc or ``` anywhere in the file
-- AsciiDoc files start directly with content (comments, headers, or text)  
+**MOST IMPORTANT**: The output must be RAW ASCIIDOC content that can be written DIRECTLY to a .adoc file.
+- NEVER wrap the output in code fences like ```adoc or ``` or ```asciidoc
+- The FIRST character of your response should be the FIRST character of the file
+- The LAST character of your response should be the LAST character of the file content
+- NO "```adoc" or "```asciidoc" at the beginning
+- NO "```" at the end
+- Return ONLY the raw file content, nothing else
 - Use ONLY AsciiDoc syntax: ==== for headers, |=== for tables, ---- for code blocks
 - Do NOT mix markdown and AsciiDoc syntax
 - Maintain proper table structures with matching |=== opening and closing
@@ -225,7 +333,7 @@ FORMATTING REQUIREMENTS:
         format_name = "the existing format"
 
     prompt = f"""
-You are a documentation assistant.
+You are a CONSERVATIVE documentation assistant. Only make changes if ABSOLUTELY necessary.
 
 {format_instructions}
 - Ensure consistent indentation and spacing
@@ -238,14 +346,22 @@ Here is the full content of the current documentation file `{file_path}`:
 {current_content}
 --------------------
 
-Analyze the diff and check whether **new, important information** is introduced that is not already covered in this file.
+IMPORTANT RULES:
+1. First, verify the file's purpose matches the code changes. If the file is about a completely different feature, return `NO_UPDATE_NEEDED`
+2. Check if the file already covers the code changes adequately. Most files don't need updates.
+3. Only add information that is DIRECTLY related to the code changes shown
+4. DO NOT add tangential information just because it seems related
+5. DO NOT rewrite or restructure the file - only add/modify what's necessary
+6. Preserve all existing content, links, formatting, and structure
 
-- If the file already includes everything important, return exactly: `NO_UPDATE_NEEDED`
-- If the file is missing key information, return the **full updated file content**, modifying only what is necessary, in valid {format_name} format
+DECISION:
+- If the file is about a different topic than the code changes → `NO_UPDATE_NEEDED`
+- If the file already covers this information adequately → `NO_UPDATE_NEEDED`  
+- If truly new, important information is missing → Return updated file content
 
-Do not explain or summarize — only return either:
-- `NO_UPDATE_NEEDED` (if nothing is missing), or
-- The full updated file content with perfect {format_name} syntax
+Return ONLY:
+- `NO_UPDATE_NEEDED` (if file doesn't need changes), OR
+- The complete updated file in valid {format_name} format (if changes are essential)
 """
 
 
@@ -288,10 +404,15 @@ def push_and_open_pr(modified_files, commit_info=None):
         "git", "commit",
         "-m", commit_msg
     ])
+    
     # Add remote with token auth
     gh_token = os.environ["GH_TOKEN"]
     docs_repo_url = DOCS_REPO_URL.replace("https://", f"https://{gh_token}@")
 
+    # Clear GitHub Actions default authentication that interferes with our PAT
+    subprocess.run(["git", "config", "--unset-all", "http.https://github.com/.extraheader"], 
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
     subprocess.run(["git", "remote", "set-url", "origin", docs_repo_url])
     subprocess.run(["git", "push", "--set-upstream", "origin", BRANCH_NAME, "--force"])
 
@@ -304,7 +425,7 @@ def push_and_open_pr(modified_files, commit_info=None):
         "gh", "pr", "create",
         "--title", "Auto-Generated Doc Updates from Code PR",
         "--body", pr_body,
-        "--base", "main",
+        "--base", "master",
         "--head", BRANCH_NAME
     ])
 
@@ -323,11 +444,19 @@ def main():
         print(f"Source repository: {commit_info['repo_url']}")
         print(f"Latest commit: {commit_info['short_hash']}")
     
-    clone_docs_repo()
-    previews = get_file_previews()
+    if not setup_docs_environment():
+        print("Failed to set up docs environment")
+        return
+        
+    file_previews = get_file_content_or_summaries()
+    print(f"DEBUG: Collected {len(file_previews)} file previews")
+
+    if not file_previews:
+        print("No documentation files found to process.")
+        return
 
     print("Asking Gemini for relevant files...")
-    relevant_files = ask_gemini_for_relevant_files(diff, previews)
+    relevant_files = ask_gemini_for_relevant_files(diff, file_previews)
     if not relevant_files:
         print("Gemini did not suggest any files.")
         return
@@ -382,7 +511,20 @@ def main():
                 
                 print(f"\n[Dry Run] PR body would be simple (commit reference is in commit message only)")
         else:
-            push_and_open_pr(modified_files, commit_info)
+            # Handle same-repo vs separate-repo scenarios
+            docs_subfolder = os.environ.get("DOCS_SUBFOLDER")
+            if docs_subfolder:
+                print("Same-repo scenario: preparing for PR creation...")
+                # Go back to repo root for git operations
+                os.chdir("..")
+                # Create and switch to docs branch
+                subprocess.run(["git", "checkout", "-b", BRANCH_NAME])
+                # Convert file paths to include docs subfolder prefix
+                docs_files = [f"{docs_subfolder}/{f}" if not f.startswith(docs_subfolder) else f for f in modified_files]
+                push_and_open_pr(docs_files, commit_info)
+            else:
+                print("Separate-repo scenario: creating PR...")
+                push_and_open_pr(modified_files, commit_info)
     else:
         print("All documentation is already up to date — no PR created.")
 

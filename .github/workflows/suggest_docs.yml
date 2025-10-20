@@ -82,6 +82,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DOCS_REPO_URL: ${{ secrets.DOCS_REPO_URL }}
+          DOCS_SUBFOLDER: ${{ secrets.DOCS_SUBFOLDER }}
           GH_TOKEN: ${{ secrets.GH_PAT }}
           PR_BASE: origin/${{ steps.pr_info.outputs.base_ref || 'main' }}
           PR_NUMBER: ${{ github.event.issue.number }}
